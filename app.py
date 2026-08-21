@@ -1,9 +1,115 @@
 import streamlit as st
 import pandas as pd
+import re
 from datetime import datetime
 
-st.set_page_config(page_title="Универсальная сверка актов", layout="wide")
-st.title("Автоматическое сравнение актов сверки")
+# -------------------- Оформление (CSS) --------------------
+st.set_page_config(
+    page_title="Универсальная сверка актов",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+st.markdown("""
+<style>
+    /* Фон всей страницы — розовый */
+    html, body, .stApp {
+        background-color: #ffc0cb !important;
+        background-image: linear-gradient(135deg, #ffc0cb 0%, #ffe4e1 100%) !important;
+        min-height: 100vh;
+    }
+    /* Основной контейнер — полупрозрачная белая карточка */
+    .stApp > div {
+        background-color: rgba(255, 255, 255, 0.92) !important;
+        border-radius: 16px;
+        padding: 25px;
+        margin: 15px auto;
+        max-width: 1200px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+    }
+    /* Убираем лишние фоны у загрузчиков */
+    .stFileUploader > div {
+        background: transparent !important;
+    }
+    .stFileUploader label {
+        background: transparent !important;
+    }
+    /* Заголовок по центру */
+    h1 {
+        text-align: center;
+        color: #4a1a4a;
+        font-weight: 700;
+        margin-bottom: 0.2rem;
+    }
+    .centered-text {
+        text-align: center;
+        font-size: 1.1rem;
+        color: #5a2a5a;
+        margin-top: -0.5rem;
+        margin-bottom: 1.5rem;
+    }
+    /* Кнопка «Сравнить» */
+    .stButton button {
+        background-color: #d63384;
+        color: white;
+        font-weight: bold;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5rem 2rem;
+        transition: 0.3s;
+        width: 100%;
+    }
+    .stButton button:hover {
+        background-color: #a02070;
+        box-shadow: 0 4px 12px rgba(214, 51, 132, 0.3);
+        transform: scale(1.02);
+    }
+    /* Центрирование сообщений */
+    .centered-message {
+        text-align: center;
+        font-weight: bold;
+        padding: 12px 20px;
+        border-radius: 10px;
+        margin: 10px auto;
+        max-width: 80%;
+        font-size: 1.05rem;
+    }
+    .centered-message.success {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+    }
+    .centered-message.error {
+        background-color: #f8d7da;
+        color: #721c24;
+        border: 1px solid #f5c6cb;
+    }
+    .centered-message.warning {
+        background-color: #fff3cd;
+        color: #856404;
+        border: 1px solid #ffc107;
+    }
+    .centered-message.info {
+        background-color: #d1ecf1;
+        color: #0c5460;
+        border: 1px solid #bee5eb;
+    }
+    /* Метрики */
+    .stMetric {
+        background: rgba(255,255,255,0.7);
+        border-radius: 12px;
+        padding: 10px;
+    }
+    /* Таблицы */
+    .stDataFrame {
+        border-radius: 12px;
+        overflow: hidden;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("📊 Универсальная сверка актов")
+st.markdown('<p class="centered-text">Автоматическое сравнение актов сверки</p>', unsafe_allow_html=True)
 
 col1, col2 = st.columns(2)
 with col1:
@@ -11,7 +117,7 @@ with col1:
 with col2:
     file2 = st.file_uploader("Второй акт", type=["xls", "xlsx"])
 
-# -------------------- Парсеры --------------------
+# -------------------- Парсеры (остаются без изменений) --------------------
 def parse_date(val):
     if pd.isna(val):
         return None
@@ -58,10 +164,24 @@ def letter_to_idx(letter):
         return 0
     return ord(letter.upper()) - 65
 
+def is_likely_doc_column(col_values, threshold=0.3):
+    doc_keywords = ['документ', 'накладная', 'платеж', 'возврат', 'корректировк',
+                    'претензи', 'счет-фактура', 'упд', 'счет', 'акт', 'приход', 'продажа']
+    vals = [str(v).strip() for v in col_values if pd.notna(v) and str(v).strip() != '']
+    if not vals:
+        return False
+    rub_count = sum(1 for v in vals if v.upper() in ('RUB', 'РУБ', 'RUB.', 'РУБ.'))
+    if rub_count / len(vals) > 0.8:
+        return False
+    kw_count = sum(1 for v in vals if any(kw in v.lower() for kw in doc_keywords))
+    if kw_count > 0:
+        return True
+    unique_texts = set(vals)
+    if len(unique_texts) > 1 and all(not v.replace('.', '').replace(',', '').isdigit() for v in unique_texts):
+        return True
+    return False
+
 def auto_detect_columns_letters(df):
-    """
-    Улучшенное определение колонок с проверкой наличия данных в каждой паре.
-    """
     header_row = None
     for i, row in df.iterrows():
         has_date = False
@@ -77,9 +197,20 @@ def auto_detect_columns_letters(df):
             header_row = i
             break
     if header_row is None:
-        return None
+        for i, row in df.iterrows():
+            for cell in row:
+                if pd.notna(cell) and parse_date(cell) is not None:
+                    for j, val in enumerate(row):
+                        if pd.notna(val) and clean_number(val) != 0.0:
+                            header_row = i - 1
+                            break
+                    if header_row is not None:
+                        break
+            if header_row is not None:
+                break
+        if header_row is None:
+            return None
 
-    # Собираем все колонки с ключевыми словами
     date_cols = []
     doc_cols = []
     debit_cols = []
@@ -96,7 +227,6 @@ def auto_detect_columns_letters(df):
             elif 'кредит' in val_str:
                 credit_cols.append(idx)
 
-    # Если не нашли дебет/кредит, проверим следующую строку
     if not debit_cols or not credit_cols:
         if header_row + 1 < len(df):
             for idx, val in df.iloc[header_row + 1].items():
@@ -107,7 +237,6 @@ def auto_detect_columns_letters(df):
                     elif 'кредит' in val_str and idx not in credit_cols:
                         credit_cols.append(idx)
 
-    # Если всё ещё не нашли, ищем по числам
     if not debit_cols or not credit_cols:
         for i in range(header_row + 1, min(header_row + 10, len(df))):
             numeric_cols = []
@@ -127,7 +256,46 @@ def auto_detect_columns_letters(df):
                     credit_cols.append(numeric_cols[-1])
                 break
 
-    # Если есть несколько пар, проверяем наличие данных
+    if not doc_cols:
+        excluded = set(date_cols + debit_cols + credit_cols)
+        candidate_cols = [c for c in range(len(df.columns)) if c not in excluded]
+        for col in candidate_cols:
+            col_data = df.iloc[header_row+1:header_row+31, col]
+            if is_likely_doc_column(col_data):
+                doc_cols.append(col)
+                break
+        if not doc_cols and date_cols:
+            date_col = date_cols[0]
+            if date_col + 1 < len(df.columns):
+                doc_cols.append(date_col + 1)
+            elif date_col - 1 >= 0:
+                doc_cols.append(date_col - 1)
+
+    if doc_cols:
+        doc_col = doc_cols[0]
+        vals = df.iloc[header_row+1:header_row+21, doc_col].dropna().astype(str).str.upper()
+        rub_count = sum(1 for v in vals if v in ('RUB', 'РУБ', 'RUB.', 'РУБ.'))
+        if len(vals) > 0 and rub_count / len(vals) > 0.8:
+            doc_cols = [c for c in doc_cols if c != doc_col]
+            excluded = set(date_cols + debit_cols + credit_cols)
+            candidate_cols = [c for c in range(len(df.columns)) if c not in excluded and c not in doc_cols]
+            for col in candidate_cols:
+                col_data = df.iloc[header_row+1:header_row+31, col]
+                if is_likely_doc_column(col_data):
+                    doc_cols.append(col)
+                    break
+            if not doc_cols and date_cols:
+                date_col = date_cols[0]
+                if date_col + 1 < len(df.columns) and date_col + 1 not in excluded:
+                    doc_cols.append(date_col + 1)
+                elif date_col - 1 >= 0 and date_col - 1 not in excluded:
+                    doc_cols.append(date_col - 1)
+
+    date_cols.sort()
+    doc_cols.sort()
+    debit_cols.sort()
+    credit_cols.sort()
+
     def has_data(date_idx, doc_idx, debit_idx, credit_idx):
         for i in range(header_row + 1, len(df)):
             row = df.iloc[i]
@@ -136,7 +304,6 @@ def auto_detect_columns_letters(df):
             dt = parse_date(row[date_idx])
             if dt is None:
                 continue
-            # Проверяем наличие числа хотя бы в одной из колонок дебета или кредита
             has_num = False
             if len(row) > debit_idx and pd.notna(row[debit_idx]):
                 try:
@@ -154,15 +321,7 @@ def auto_detect_columns_letters(df):
                 return True
         return False
 
-    # Сортируем колонки
-    date_cols.sort()
-    doc_cols.sort()
-    debit_cols.sort()
-    credit_cols.sort()
-
-    # Пробуем самую правую пару (последние элементы)
     if date_cols and doc_cols and debit_cols and credit_cols:
-        # Правая пара
         d_idx = date_cols[-1]
         doc_idx = doc_cols[-1]
         deb_idx = debit_cols[-1]
@@ -170,16 +329,14 @@ def auto_detect_columns_letters(df):
         if has_data(d_idx, doc_idx, deb_idx, cred_idx):
             return (index_to_letter(d_idx), index_to_letter(doc_idx),
                     index_to_letter(deb_idx), index_to_letter(cred_idx))
-        # Левая пара (если есть)
         if len(date_cols) > 1:
             d_idx = date_cols[-2]
-            doc_idx = doc_cols[-2]
-            deb_idx = debit_cols[-2]
-            cred_idx = credit_cols[-2]
+            doc_idx = doc_cols[-2] if len(doc_cols) > 1 else doc_cols[0]
+            deb_idx = debit_cols[-2] if len(debit_cols) > 1 else debit_cols[0]
+            cred_idx = credit_cols[-2] if len(credit_cols) > 1 else credit_cols[0]
             if has_data(d_idx, doc_idx, deb_idx, cred_idx):
                 return (index_to_letter(d_idx), index_to_letter(doc_idx),
                         index_to_letter(deb_idx), index_to_letter(cred_idx))
-        # Если ни одна не подходит, берём первую попавшуюся
         return (index_to_letter(date_cols[0]), index_to_letter(doc_cols[0]),
                 index_to_letter(debit_cols[0]), index_to_letter(credit_cols[0]))
     else:
@@ -222,12 +379,70 @@ def is_correction(doc_text):
     kw = ['корректировк', 'претензи', 'возврат', 'перерасчет', 'сторно', 'исправлен']
     return any(k in doc_text.lower() for k in kw)
 
+# -------------------- Функция извлечения контрагентов --------------------
+def get_contractors(df):
+    text_lines = []
+    for i in range(min(10, len(df))):
+        row = df.iloc[i]
+        for cell in row:
+            if pd.notna(cell):
+                text_lines.append(str(cell))
+    full_text = ' '.join(text_lines)
+
+    match = re.search(r'между\s+(.+?)\s+и\s+(.+?)(?:\s*[\(,]|\s*$)', full_text, re.IGNORECASE)
+    if match:
+        org1 = match.group(1).strip()
+        org2 = match.group(2).strip()
+        def extract_key(name):
+            q = re.search(r'["“]([^"“]+)["“"]', name)
+            if q:
+                return q.group(1).strip().upper()
+            words = name.split()
+            if words:
+                last = re.sub(r'[^\w]', '', words[-1])
+                if last:
+                    return last.upper()
+            return name.upper()
+        return {extract_key(org1), extract_key(org2)}
+    else:
+        orgs = set()
+        patterns = [
+            r'ООО\s+"([^"]+)"',
+            r'Общество\s+с\s+ограниченной\s+ответственностью\s+"([^"]+)"',
+            r'Общество\s+с\s+ограниченной\s+ответственностью\s+\(ООО\)\s+"([^"]+)"',
+            r'\(ООО\)\s+"([^"]+)"'
+        ]
+        for pat in patterns:
+            matches = re.findall(pat, full_text, re.IGNORECASE)
+            for m in matches:
+                orgs.add(m.strip().upper())
+        if orgs:
+            return orgs
+        return set()
+
 # -------------------- Основная часть --------------------
 if file1 and file2:
     df1 = pd.read_excel(file1, header=None)
     df2 = pd.read_excel(file2, header=None)
 
-    # Показываем структуру
+    contractors1 = get_contractors(df1)
+    contractors2 = get_contractors(df2)
+
+    skip_check = st.checkbox("Пропустить проверку контрагентов (если не совпадают)", value=False)
+
+    # Вывод центрированных сообщений вместо стандартных
+    if not skip_check and contractors1 and contractors2:
+        if contractors1 != contractors2:
+            st.markdown('<div class="centered-message error">❌ Акты относятся к разным контрагентам! Проверьте загруженные файлы. Если вы уверены, что они верны, отметьте "Пропустить проверку" и нажмите "Сравнить" снова.</div>', unsafe_allow_html=True)
+            st.stop()
+        else:
+            st.markdown('<div class="centered-message success">✅ Контрагенты совпадают. Продолжаем сравнение.</div>', unsafe_allow_html=True)
+    else:
+        if skip_check:
+            st.markdown('<div class="centered-message warning">⚠️ Проверка контрагентов пропущена по вашему запросу.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="centered-message info">⚠️ Не удалось определить контрагентов в одном из файлов. Проверка пропущена.</div>', unsafe_allow_html=True)
+
     st.subheader("Просмотр структуры файлов (первые 10 строк)")
     col_struct1, col_struct2 = st.columns(2)
     with col_struct1:
@@ -237,31 +452,19 @@ if file1 and file2:
         st.write("Второй файл")
         st.dataframe(df2.head(10))
 
-    # Автоматическое определение
     detected1 = auto_detect_columns_letters(df1)
     detected2 = auto_detect_columns_letters(df2)
 
-    # Если не удалось, используем fallback
-    if detected1 is None:
-        # Проверяем, есть ли две таблицы (по наличию фразы "По данным")
-        has_two_tables = any('по данным' in str(cell).lower() for cell in df1.iloc[0:10, 0])
-        if has_two_tables:
-            date1_def, doc1_def, debit1_def, credit1_def = 'A', 'B', 'D', 'F'
-        else:
-            date1_def, doc1_def, debit1_def, credit1_def = 'A', 'B', 'G', 'H'
-    else:
+    if detected1:
         date1_def, doc1_def, debit1_def, credit1_def = detected1
-
-    if detected2 is None:
-        has_two_tables = any('по данным' in str(cell).lower() for cell in df2.iloc[0:10, 0])
-        if has_two_tables:
-            date2_def, doc2_def, debit2_def, credit2_def = 'A', 'B', 'G', 'H'
-        else:
-            date2_def, doc2_def, debit2_def, credit2_def = 'A', 'B', 'G', 'H'
     else:
+        date1_def, doc1_def, debit1_def, credit1_def = 'A', 'B', 'D', 'F'
+    if detected2:
         date2_def, doc2_def, debit2_def, credit2_def = detected2
+    else:
+        date2_def, doc2_def, debit2_def, credit2_def = 'A', 'B', 'G', 'H'
 
-    st.info("Автоматически определены колонки. Если они неверны, измените буквы ниже и нажмите «Сравнить».")
+    st.info("Если автоматические буквы неверны, исправьте их вручную и нажмите «Сравнить».")
 
     col1_set, col2_set = st.columns(2)
     with col1_set:
@@ -294,24 +497,32 @@ if file1 and file2:
         ops1 = extract_ops(df1, date_idx1, doc_idx1, debit_idx1, credit_idx1)
         ops2 = extract_ops(df2, date_idx2, doc_idx2, debit_idx2, credit_idx2)
 
-        # Если в первом файле не найдено операций, пробуем альтернативные колонки (левая таблица)
-        if len(ops1) == 0:
-            # Пробуем левую таблицу для первого файла (A, B, D, F)
-            ops1_alt = extract_ops(df1, letter_to_idx('A'), letter_to_idx('B'), letter_to_idx('D'), letter_to_idx('F'))
-            if len(ops1_alt) > 0:
-                ops1 = ops1_alt
-                # Обновляем отображаемые буквы (чтобы пользователь видел)
-                date1, doc1, debit1, credit1 = 'A', 'B', 'D', 'F'
-                st.info("Для первого файла автоматически выбрана левая таблица (A, B, D, F).")
+        def has_valid_docs(ops, threshold=0.7):
+            if not ops:
+                return False
+            valid = sum(1 for op in ops if op['doc'] and op['doc'] not in ('RUB', 'руб', 'RUB.', 'руб.'))
+            return valid / len(ops) > threshold
 
-        # Если во втором файле не найдено операций, пробуем альтернативные колонки
-        if len(ops2) == 0:
-            # Пробуем стандартные колонки для второго файла (A, B, G, H)
-            ops2_alt = extract_ops(df2, letter_to_idx('A'), letter_to_idx('B'), letter_to_idx('G'), letter_to_idx('H'))
-            if len(ops2_alt) > 0:
-                ops2 = ops2_alt
-                date2, doc2, debit2, credit2 = 'A', 'B', 'G', 'H'
-                st.info("Для второго файла автоматически выбраны колонки (A, B, G, H).")
+        if ops1 and not has_valid_docs(ops1):
+            for col in range(len(df1.columns)):
+                if col == date_idx1 or col == debit_idx1 or col == credit_idx1:
+                    continue
+                test_ops = extract_ops(df1, date_idx1, col, debit_idx1, credit_idx1)
+                if test_ops and has_valid_docs(test_ops):
+                    ops1 = test_ops
+                    doc1_def = index_to_letter(col)
+                    st.info(f"Для первого файла автоматически выбрана колонка документа {doc1_def}")
+                    break
+        if ops2 and not has_valid_docs(ops2):
+            for col in range(len(df2.columns)):
+                if col == date_idx2 or col == debit_idx2 or col == credit_idx2:
+                    continue
+                test_ops = extract_ops(df2, date_idx2, col, debit_idx2, credit_idx2)
+                if test_ops and has_valid_docs(test_ops):
+                    ops2 = test_ops
+                    doc2_def = index_to_letter(col)
+                    st.info(f"Для второго файла автоматически выбрана колонка документа {doc2_def}")
+                    break
 
         if filter_initial:
             start = datetime(2026, 7, 1).date()
@@ -330,7 +541,6 @@ if file1 and file2:
             st.error("В одном из файлов нет операций. Проверьте правильность введённых букв колонок.")
             st.stop()
 
-        # Сравнение
         copy1 = ops1.copy()
         copy2 = ops2.copy()
         matched = []
@@ -366,7 +576,6 @@ if file1 and file2:
             st.error(f"Операции, отсутствующие в первом акте ({len(only2)} шт.):")
             st.dataframe(pd.DataFrame(only2)[['date', 'raw_doc', 'amount', 'sign']])
 
-        # Отдельно корректировки
         corr_only1 = [op for op in only1 if is_correction(op['doc'])]
         corr_only2 = [op for op in only2 if is_correction(op['doc'])]
         if corr_only1 or corr_only2:
