@@ -409,6 +409,64 @@ def get_contractors(df):
         return {o.strip().upper() for o in orgs} if orgs else set()
 
 
+# -------------------- Проверка реквизитов (отдельно от сверки) --------------------
+def get_inns(df):
+    """Извлекает только ИНН, явно подписанные в шапке акта.
+
+    В акте часто присутствуют реквизиты обеих сторон, поэтому сравниваются
+    наборы ИНН, а не первый найденный номер.
+    """
+    cells = []
+    for row in df.head(18).itertuples(index=False, name=None):
+        for cell in row:
+            if pd.notna(cell):
+                cells.append(str(cell))
+    header = ' '.join(cells)
+    result = set()
+    for value in re.findall(r'(?<![А-Яа-яA-Za-z])ИНН\s*[:№-]?\s*(\d[\d\s]{8,14}\d)', header, re.I):
+        number = re.sub(r'\D', '', value)
+        if len(number) in (10, 12):
+            result.add(number)
+    return result
+
+
+def normalize_contractor(name):
+    """Нормализация только для проверки сторон, не для сверки операций."""
+    name = str(name).upper().replace('Ё', 'Е')
+    name = re.sub(r'[«»"“”„]', ' ', name)
+    name = re.sub(r'\b(?:ООО|АО|ПАО|ОАО|ЗАО|ИП|ОБЩЕСТВО|С|ОГРАНИЧЕННОЙ|ОТВЕТСТВЕННОСТЬЮ)\b', ' ', name)
+    return re.sub(r'[^А-ЯA-Z0-9]+', '', name)
+
+
+def compare_contractors(names1, names2, inns1, inns2):
+    """Проверка пар участников; к извлечению и сопоставлению операций отношения не имеет."""
+    a = {normalize_contractor(x) for x in names1 if normalize_contractor(x)}
+    b = {normalize_contractor(x) for x in names2 if normalize_contractor(x)}
+    common = a & b
+    unique_a, unique_b = a - b, b - a
+
+    if inns1 and inns2:
+        if inns1 == inns2:
+            return 'match', 'ИНН участников в обоих актах совпадают.'
+        if not (inns1 & inns2):
+            return 'different', 'В актах не совпадают ИНН участников. Вероятно, выбраны разные контрагенты.'
+        if len(inns1) >= 2 and len(inns2) >= 2:
+            return 'different', 'Один ИНН совпадает, а второй различается. Вероятно, выбраны акты разных контрагентов.'
+        return 'uncertain', 'Найдены общие ИНН, но реквизиты извлечены не полностью.'
+
+    # Когда ИНН одного акта отсутствуют, нельзя считать общий "наш" участник
+    # доказательством того, что второй контрагент тот же.
+    if a and b:
+        if a == b:
+            return 'match', 'Названия обеих сторон совпадают (ИНН определены не полностью).'
+        if common and unique_a and unique_b:
+            return 'different', 'Одна сторона совпадает, но другие участники актов различаются. Вероятно, выбраны акты разных контрагентов.'
+        if not common:
+            return 'uncertain', 'Не удалось найти общих участников по названиям. Проверьте реквизиты и оформление шапок.'
+        return 'uncertain', 'Состав участников определён не полностью. Проверьте реквизиты.'
+    return 'uncertain', 'Недостаточно реквизитов для автоматической проверки контрагентов.'
+
+
 # -------------------- Умный анализ (не меняет алгоритм сверки) --------------------
 def smart_category(doc):
     text = str(doc).lower().replace('ё', 'е')
@@ -555,16 +613,32 @@ if file1 and file2:
 
     contractors1 = get_contractors(df1)
     contractors2 = get_contractors(df2)
-    skip_check = st.checkbox("Пропустить проверку контрагентов (если не совпадают)", value=False)
-
-    if not skip_check and contractors1 and contractors2:
-        if contractors1 != contractors2:
-            st.markdown('<div class="centered-message error">❌ Акты относятся к разным контрагентам! Проверьте файлы.</div>', unsafe_allow_html=True)
-            st.stop()
-        else:
-            st.markdown('<div class="centered-message success">✅ Контрагенты совпадают. Продолжаем сравнение.</div>', unsafe_allow_html=True)
+    inns1 = get_inns(df1)
+    inns2 = get_inns(df2)
+    skip_check = st.checkbox("Пропустить проверку контрагентов", value=False)
+    contractor_status = 'uncertain'
+    allow_comparison = True
+    if skip_check:
+        st.info("Проверка контрагентов отключена по вашему выбору.")
     else:
-        st.markdown('<div class="centered-message warning">⚠️ Проверка контрагентов пропущена.</div>', unsafe_allow_html=True)
+        contractor_status, message = compare_contractors(contractors1, contractors2, inns1, inns2)
+        if contractor_status == 'match':
+            st.success(message)
+        elif contractor_status == 'different':
+            st.error("⚠️ " + message + " Сверка приостановлена до подтверждения.")
+            allow_comparison = st.checkbox(
+                "Я проверил контрагентов и всё равно хочу выполнить сверку",
+                value=False,
+                key="confirm_different_contractors",
+            )
+        else:
+            st.warning(message + " Сверка доступна.")
+        with st.expander("Какие реквизиты контрагентов обнаружены?"):
+            st.write("**Акт 1 — названия:**", ", ".join(sorted(contractors1)) or "не найдены")
+            st.write("**Акт 2 — названия:**", ", ".join(sorted(contractors2)) or "не найдены")
+            st.write("**Акт 1 — ИНН:**", ", ".join(sorted(inns1)) or "не найдены")
+            st.write("**Акт 2 — ИНН:**", ", ".join(sorted(inns2)) or "не найдены")
+            st.caption("Проверка предварительная: в файлах могут присутствовать ИНН обеих сторон. На алгоритм сопоставления операций она не влияет.")
 
     st.markdown("### Настройка сравнения")
     st.caption("Проверьте расположение колонок и параметры поиска совпадений.")
@@ -607,7 +681,7 @@ if file1 and file2:
     ignore_dates = st.checkbox("Не учитывать даты при сравнении", value=True)
     filter_initial = st.checkbox("Исключить операции до 01.07.2026", value=False)
 
-    if st.button("🔎 Найти, где не сходится"):
+    if st.button("🔎 Найти, где не сходится", disabled=not allow_comparison):
         with st.spinner("🔍 Ищем документы, которые решили пойти своим путём…"):
             def get_col_idx(col_str, df_cols):
                 col_str = str(col_str).strip()
@@ -650,36 +724,51 @@ if file1 and file2:
 
         total_unmatched = len(only1) + len(only2)
         if total_unmatched:
-            st.warning(
-                f"🧐 Кажется, кто-то не договорился. Нашли {total_unmatched} "
-                f"записей без пары: {len(only1)} в первом акте и {len(only2)} во втором. "
-                "Одна операция может попасть в оба списка — проверьте подсказки ниже."
-            )
+            st.warning(f"🧐 Кажется, кто-то не договорился! Найдено {total_unmatched} операций без пары. Сейчас покажем, где именно.")
         else:
             st.success("🎉 Красота! Расхождений не обнаружено. Бухгалтер может выдохнуть.")
 
         st.subheader("Результаты сравнения")
-        st.metric("Совпало операций", len(matched))
-        st.metric("Только в первом акте", len(only1))
-        st.metric("Только во втором акте", len(only2))
+        result_col1, result_col2, result_col3 = st.columns(3)
+        with result_col1:
+            st.metric("✅ Совпало операций", len(matched))
+        with result_col2:
+            st.metric("📄 Только в акте №1", len(only1))
+        with result_col3:
+            st.metric("📄 Только в акте №2", len(only2))
+        if total_unmatched:
+            st.caption(f"{len(matched)} операций нашли свою пару. {total_unmatched} пока остались в одиночестве. 🙂")
+        else:
+            st.caption(f"Все {len(matched)} операций нашли свою пару. Идеальная компания! ✨")
 
-        if only1:
-            st.error(f"Операции, отсутствующие во втором акте ({len(only1)} шт.):")
-            st.dataframe(pd.DataFrame(only1)[['date', 'raw_doc', 'amount', 'sign']])
-        if only2:
-            st.error(f"Операции, отсутствующие в первом акте ({len(only2)} шт.):")
-            st.dataframe(pd.DataFrame(only2)[['date', 'raw_doc', 'amount', 'sign']])
+        # Каждая операция выводится только один раз, в своей категории.
+        st.subheader("Детальный разбор расхождений")
+        st.caption("Все документы без пары сгруппированы по типам. Повторного списка претензий нет.")
 
-        corr_only1 = [op for op in only1 if is_correction(op['doc'])]
-        corr_only2 = [op for op in only2 if is_correction(op['doc'])]
-        if corr_only1 or corr_only2:
-            st.subheader("🔍 Не совпавшие корректировки/претензии")
-            if corr_only1:
-                st.error(f"В первом акте есть, во втором нет ({len(corr_only1)}):")
-                st.dataframe(pd.DataFrame(corr_only1)[['date', 'raw_doc', 'amount', 'sign']])
-            if corr_only2:
-                st.error(f"Во втором акте есть, в первом нет ({len(corr_only2)}):")
-                st.dataframe(pd.DataFrame(corr_only2)[['date', 'raw_doc', 'amount', 'sign']])
+        def readable_direction(op):
+            return "−" if op.get("sign", 1) == -1 else "+"
+
+        def show_grouped_differences(operations, act_label):
+            if not operations:
+                st.success(f"{act_label}: операций без пары нет.")
+                return
+            st.markdown(f"#### {act_label} · {len(operations)}")
+            groups = {}
+            for op in operations:
+                group = smart_category(op.get("doc", op.get("raw_doc", "")))
+                groups.setdefault(group, []).append(op)
+            for group, entries in groups.items():
+                st.markdown(f"**{group} — {len(entries)}**")
+                rows = [{
+                    "Дата": op["date"].strftime("%d.%m.%Y") if hasattr(op["date"], "strftime") else str(op["date"]),
+                    "Документ": op["raw_doc"],
+                    "Сумма, ₽": round(op["amount"], 2),
+                    "Направление": readable_direction(op),
+                } for op in entries]
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+        show_grouped_differences(only1, "Только в первом акте")
+        show_grouped_differences(only2, "Только во втором акте")
 
         # -------------------- ДОПОЛНИТЕЛЬНЫЙ УМНЫЙ АНАЛИЗ --------------------
         # Основной алгоритм выше НЕ ИЗМЕНЯЕТСЯ.
@@ -710,22 +799,6 @@ if file1 and file2:
             st.dataframe(pd.DataFrame(hints), hide_index=True, use_container_width=True)
         else:
             st.info("Похожих сумм с разницей до 1 000 рублей среди несопоставленных операций не обнаружено.")
-
-        def show_missing(title, items):
-            st.markdown(f"#### {title} — {len(items)}")
-            if items:
-                rows = [{
-                    "Дата": op['date'].strftime('%d.%m.%Y'),
-                    "Документ": op['raw_doc'],
-                    "Сумма, ₽": round(op['amount'], 2),
-                    "Категория": smart_category(op['doc'])
-                } for op in items]
-                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-            else:
-                st.success("Нет записей без пары.")
-
-        show_missing("Только в первом акте", only1)
-        show_missing("Только во втором акте", only2)
 
         # Повторения с равным количеством в обоих актах не объявляем ошибкой.
         from collections import Counter
