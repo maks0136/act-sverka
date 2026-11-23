@@ -1,100 +1,331 @@
-import streamlit as st
-import pandas as pd
+import logging
+import os
 import re
+import sqlite3
 from datetime import datetime, date
+from pathlib import Path
 
-# -------------------- Оформление (CSS) --------------------
+import pandas as pd
+import streamlit as st
+
+from sverka_history import ReconciliationHistory
+from sverka_review import render_assistant, render_history
+
+# -------------------- Оформление --------------------
 st.set_page_config(page_title="ACT SVERKA | Сверка актов", page_icon="📑", layout="wide", initial_sidebar_state="collapsed")
 
-st.markdown("""
-<style>
-:root {color-scheme:light;}
-.stApp{background:radial-gradient(ellipse 55% 38% at 4% 2%,rgba(145,201,255,.38),transparent 75%),radial-gradient(ellipse 48% 40% at 98% 13%,rgba(182,157,255,.38),transparent 78%),radial-gradient(ellipse 48% 32% at 45% 90%,rgba(207,231,255,.32),transparent 80%),#f8faff;color:#17233d;}
-[data-testid="stHeader"]{background:transparent!important;}
-.block-container{max-width:1180px;padding-top:1.5rem;padding-bottom:3rem;}
-h1,h2,h3{color:#1d2843!important;letter-spacing:-.035em;}
-h2{font-size:1.45rem!important;}
-.site-nav{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px 22px;background:rgba(255,255,255,.77);border:1px solid rgba(255,255,255,.95);border-radius:20px;box-shadow:0 10px 35px rgba(66,84,145,.08);backdrop-filter:blur(16px);margin-bottom:24px;}
-.site-brand{display:flex;align-items:center;gap:11px;font-weight:850;letter-spacing:.08em;font-size:1rem;color:#1b2949;}
-.site-logo{width:36px;height:36px;border-radius:12px;background:linear-gradient(140deg,#5878ee,#9778f7);display:grid;place-items:center;color:#fff;font-size:22px;box-shadow:0 5px 16px rgba(92,101,222,.24);}
-.site-nav-right{color:#72809d;font-size:.83rem;white-space:nowrap;}
-.site-nav-joke{flex:1;text-align:center;color:#6266a7;font-size:.88rem;font-weight:600;padding:0 14px;}
-.hero{position:relative;isolation:isolate;overflow:hidden;display:grid;grid-template-columns:1.25fr .75fr;gap:24px;min-height:290px;padding:38px 40px;border-radius:28px;background:linear-gradient(120deg,#ffffff 0%,#f3f5ff 65%,#ecebff 100%);border:1px solid white;box-shadow:0 22px 60px rgba(87,98,162,.10);margin-bottom:19px;}
-.hero:before{content:"";position:absolute;width:360px;height:360px;right:-110px;top:-150px;border-radius:50%;background:linear-gradient(145deg,rgba(135,183,255,.36),rgba(172,135,255,.3));z-index:-1;}
-.hero-tag{display:inline-flex;align-items:center;gap:8px;font-size:.76rem;color:#5465c4;font-weight:800;letter-spacing:.09em;text-transform:uppercase;background:#e9ecff;border:1px solid #dfe3ff;padding:8px 12px;border-radius:100px;}
-.hero-title{font-size:clamp(2.2rem,4vw,3.6rem);line-height:1.09;letter-spacing:-.055em;font-weight:850;color:#1c2b4c;margin:20px 0 14px;max-width:650px;}
-.hero-title em{font-style:normal;background:linear-gradient(100deg,#5273df,#9674df);-webkit-background-clip:text;background-clip:text;color:transparent;}
-.hero-desc{font-size:1.01rem;line-height:1.7;color:#697792;max-width:590px;}
-.hero-art{position:relative;min-height:220px;display:flex;align-items:center;justify-content:center;}
-.art-card{width:260px;background:rgba(255,255,255,.94);border:1px solid #fff;border-radius:20px;box-shadow:0 24px 50px rgba(70,88,157,.18);padding:20px;transform:rotate(-5deg);}
-.art-title{font-size:.83rem;color:#27375a;font-weight:800;margin-bottom:16px;}
-.art-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:10px 0;font-size:.74rem;color:#67738c;}
-.art-line{height:9px;border-radius:10px;background:#e7ecfa;width:65%;}
-.art-line.short{width:43%;}
-.art-pill{background:#e6f7ef;color:#23986c;border-radius:50px;padding:5px 8px;font-weight:800;}
-.art-pill.warn{background:#fff0e5;color:#d48045;}
-.art-float{position:absolute;right:4%;bottom:12%;background:#fff;border-radius:13px;padding:10px 13px;box-shadow:0 12px 30px rgba(81,95,157,.15);font-size:.77rem;color:#5364a5;font-weight:800;transform:rotate(7deg);}
-.features{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:0 0 31px;}
-.feature{background:rgba(255,255,255,.83);border:1px solid #e7eafb;border-radius:18px;padding:19px 20px;box-shadow:0 8px 28px rgba(81,97,151,.045);transition:transform .2s,box-shadow .2s;}
-.feature:hover{transform:translateY(-3px);box-shadow:0 14px 35px rgba(81,97,151,.10);}
-.feature-icon{display:inline-grid;place-items:center;width:36px;height:36px;border-radius:12px;background:#eef1ff;color:#6776d9;font-size:19px;margin-bottom:11px;}
-.feature strong{display:block;color:#263553;font-size:.93rem;margin-bottom:6px;}
-.feature span{color:#75819a;font-size:.82rem;line-height:1.5;}
-.section-label{font-size:.83rem;color:#66769b;font-weight:800;letter-spacing:.08em;text-transform:uppercase;margin:0 0 14px;}
-[data-testid="stFileUploader"]{background:rgba(255,255,255,.9);border:1px solid #e0e6f6;border-radius:19px;padding:16px;box-shadow:0 10px 28px rgba(65,82,145,.045);}
-[data-testid="stFileUploaderDropzone"]{background:#f7f9ff;border:1px dashed #cbd6f0;border-radius:14px;}
-[data-testid="stMetric"]{background:rgba(255,255,255,.95);border:1px solid #e0e6f6;border-radius:17px;padding:19px;box-shadow:0 8px 25px rgba(65,82,145,.06);}
-[data-testid="stMetricLabel"]{color:#75829c;}
-[data-testid="stMetricValue"]{color:#26365b;}
-.stButton button[kind="primary"],.stButton button{background:linear-gradient(110deg,#526ee3,#7965d9)!important;border:0!important;border-radius:12px!important;color:#fff!important;font-weight:750!important;min-height:46px;box-shadow:0 7px 17px rgba(89,103,218,.19);}
-.stButton button:hover{background:linear-gradient(110deg,#415bcd,#6651c7)!important;color:white!important;transform:translateY(-1px);}
-[data-testid="stTextArea"] textarea{background:#fff!important;border:1px solid #dfe5f4!important;border-radius:13px!important;font-family:Consolas,monospace;line-height:1.6;}
-[data-testid="stExpander"]{background:rgba(255,255,255,.85);border:1px solid #e0e6f5;border-radius:13px;}
-[data-testid="stDataFrame"]{border-radius:13px;overflow:hidden;}
-[data-testid="stTextInput"] input{border-radius:10px;}
-.site-footer{margin-top:48px;padding:26px 6px;border-top:1px solid #dce3f3;display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap;color:#7a87a0;font-size:.82rem;}
-@media(max-width:800px){.hero{grid-template-columns:1fr;padding:28px 23px}.hero-art{display:none}.features{grid-template-columns:1fr}.site-nav-right{display:none}.site-nav-joke{font-size:.75rem;padding:0 2px}.block-container{padding-top:1rem}}
-/* Ненавязчивый бухгалтерский паттерн на фоне */
-.stApp:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.38;background-image:linear-gradient(rgba(118,145,220,.09) 1px,transparent 1px),linear-gradient(90deg,rgba(118,145,220,.09) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,#000,transparent 72%);z-index:0}
-.block-container{position:relative;z-index:1}
-.hero{min-height:345px;grid-template-columns:1.1fr .9fr;align-items:center;background:linear-gradient(115deg,#fff 0%,#f7faff 48%,#f0efff 100%)}
-.hero:after{content:"";position:absolute;width:230px;height:230px;left:-100px;bottom:-165px;border-radius:50%;background:rgba(158,202,255,.24);pointer-events:none}
-.hero-art{min-height:260px;isolation:isolate}
-.doc-visual{position:relative;width:100%;height:250px;max-width:380px}
-.doc-sheet{position:absolute;width:215px;height:210px;padding:19px 17px;border:1px solid #e2e8f7;border-radius:17px;background:rgba(255,255,255,.94);box-shadow:0 20px 44px rgba(75,90,151,.16)}
-.doc-sheet.first{left:2%;top:8px;transform:rotate(-10deg)}
-.doc-sheet.second{right:0;top:35px;transform:rotate(8deg)}
-.doc-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:800;color:#2b3a60;margin-bottom:18px}
-.doc-icon{display:grid;place-items:center;width:25px;height:29px;border-radius:7px;background:#e8efff;color:#5a76d8;font-size:16px}
-.doc-line{height:9px;border-radius:8px;background:#e8edf8;margin:12px 0}
-.doc-line.sm{width:62%}.doc-line.md{width:82%}
-.doc-amount{display:flex;justify-content:space-between;font-size:11px;color:#7c8aa7;margin-top:18px}
-.doc-amount b{color:#40557c}
-.compare-bubble{position:absolute;z-index:3;left:45%;top:44%;width:56px;height:56px;display:grid;place-items:center;border-radius:18px;background:linear-gradient(140deg,#5578e7,#9573e9);box-shadow:0 13px 26px rgba(88,99,204,.32);color:#fff;font-size:27px;border:4px solid #fff}
-.difference-chip{position:absolute;z-index:4;right:-3%;bottom:0;background:#fff;border:1px solid #e9e5ff;border-radius:13px;box-shadow:0 10px 28px rgba(80,94,159,.15);padding:10px 13px;font-size:12px;color:#7a6b9b;font-weight:700}
-.difference-chip strong{color:#7557c9}
-.compatibility{margin-top:13px;display:inline-flex;gap:7px;align-items:center;color:#6b7696;font-size:.81rem}
-.compatibility b{font-weight:700;color:#5664b4}
-@media(max-width:800px){.hero-art{display:flex;min-height:230px}.doc-visual{transform:scale(.82);transform-origin:center}.hero{gap:0}.hero-title{font-size:2.25rem}}
-.why-section{margin-top:34px;padding:30px 34px;border:1px solid #dfe4f6;border-radius:24px;background:linear-gradient(115deg,rgba(255,255,255,.96),rgba(239,239,255,.78));box-shadow:0 14px 40px rgba(86,103,177,.08)}
-.why-kicker{font-size:.74rem;font-weight:800;letter-spacing:.12em;color:#777cc4;margin-bottom:12px}
-.why-section h3{font-size:1.5rem;color:#222c4c;margin:0 0 12px;font-weight:800}
-.why-section p{font-size:1.02rem;color:#53617d;line-height:1.75;max-width:780px;margin:0 0 16px}
-.why-note{font-size:.84rem;color:#68738e;background:rgba(238,241,255,.8);padding:12px 15px;border-radius:12px;line-height:1.6}
-</style>
-""",unsafe_allow_html=True)
+STATS_DB = Path(os.getenv("ACT_SVERKA_STATS_DB", str(Path(__file__).with_name("sverka_stats.sqlite3"))))
+logger = logging.getLogger(__name__)
+HISTORY = ReconciliationHistory(STATS_DB)
 
-st.markdown("""<div class="site-nav"><div class="site-brand"><div class="site-logo">≋</div>ACT SVERKA</div><div class="site-nav-joke">Сводим дебет с кредитом. И людей с ума не сводим 😎</div><div class="site-nav-right">Сверка документов · Excel / PDF</div></div>
-<section class="hero"><div><div class="hero-tag">✦ Для тех, кто устал сверять вручную</div><div class="hero-title">Два акта. Одна правда.<br><em>И никаких поисков по 300 строкам.</em></div><div class="hero-desc">Сервис сравнивает операции в двух актах сверки, находит несовпадения по суммам и датам и помогает разобраться, где именно возникла разница.</div><div class="compatibility">◈ Excel и PDF · Выгрузки из <b>1С</b> · Поиск возможных ошибок до 1 000 ₽</div></div>
-<div class="hero-art"><div class="doc-visual" aria-hidden="true"><div class="doc-sheet first"><div class="doc-head"><span class="doc-icon">▤</span> АКТ №1</div><div class="doc-line md"></div><div class="doc-line"></div><div class="doc-line sm"></div><div class="doc-amount"><span>Операция</span><b>12 450,00 ₽</b></div></div><div class="doc-sheet second"><div class="doc-head"><span class="doc-icon">▤</span> АКТ №2</div><div class="doc-line"></div><div class="doc-line sm"></div><div class="doc-line md"></div><div class="doc-amount"><span>Операция</span><b>12 450,00 ₽</b></div></div><div class="compare-bubble">⇄</div><div class="difference-chip">✦ Поиск расхождений <strong>до 1 000 ₽</strong></div></div></div></section>
-<div class="features"><div class="feature"><div class="feature-icon">⇄</div><strong>Сравнение актов</strong><span>Проверим операции и покажем, какие документы не нашли пару.</span></div><div class="feature"><div class="feature-icon">✧</div><strong>Умный поиск</strong><span>Подскажем, где возможна ошибка в сумме. Даже 11 копеек не спрячутся.</span></div><div class="feature"><div class="feature-icon">▤</div><strong>Готовый результат</strong><span>Список расхождений с документами, датами и суммами. Без ручной перепечатки.</span></div></div>
-<div class="section-label">01 / Загрузите два акта. Остальное — наша забота.</div>""",unsafe_allow_html=True)
 
-col1, col2 = st.columns(2)
-with col1:
-    file1 = st.file_uploader("Первый акт", type=["xls", "xlsx", "pdf"])
-with col2:
-    file2 = st.file_uploader("Второй акт", type=["xls", "xlsx", "pdf"])
+def show_header(slot, total):
+    display_total = "—" if total is None else f"{total:,}".replace(",", "\u202f")
+    slot.html(f"""
+<header id="sverka-header">
+  <div class="screen-brand"><span class="screen-logo" aria-hidden="true">≋</span> ACT SVERKA</div>
+  <figure class="screen-tagline">
+    <blockquote>«Ни@уя, сошлось!»</blockquote>
+    <figcaption>— комментарий Алины после сверки</figcaption>
+  </figure>
+  <div class="screen-counter">
+    <span>Всего сверок</span><strong>{display_total}</strong>
+  </div>
+</header>
+""")
+
+
+# Стили действуют на всю страницу, включая настройки и результаты.
+st.html("""<style>
+.stApp {
+  isolation: isolate;
+  --sverka-ink: light-dark(#231d35, #f5effa);
+  --sverka-muted: light-dark(#5d556b, #c9bfd5);
+  --sverka-panel: light-dark(#fff, #251f2e);
+  --sverka-line: light-dark(#e5dff0, #453a53);
+  --sverka-accent: light-dark(#5946b7, #c3b4ff);
+  --sverka-amber: light-dark(#7c4208, #ffdfab);
+  --sverka-amber-bg: light-dark(#fff0dc, #553915);
+  background:
+    radial-gradient(ellipse at 0% 26%, light-dark(#d7e9ff, #273952), transparent 58%),
+    radial-gradient(ellipse at 100% 72%, light-dark(#e3d6fa, #422b56), transparent 56%),
+    light-dark(#f1eef8, #21192d);
+}
+[data-testid="stHeader"] { background: transparent; }
+.stMainBlockContainer {
+  max-width: 1180px;
+  padding: 3.5rem clamp(1rem, 6vw, 5rem) 3rem;
+}
+
+#sverka-screen { color: var(--sverka-ink); display: grid; gap: 16px; }
+#sverka-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px 12px;
+  padding: 11px clamp(12px, 3vw, 26px);
+  background: var(--sverka-panel);
+  color: var(--sverka-ink);
+  border: 1px solid var(--sverka-line);
+  border-radius: 14px;
+}
+#sverka-header .screen-brand {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 13px; font-weight: 800; letter-spacing: .09em; white-space: nowrap;
+}
+#sverka-header .screen-logo {
+  display: grid; place-items: center; width: 31px; height: 31px;
+  background: #6350c6; color: #fff; border-radius: 9px; font-size: 22px; line-height: 1;
+}
+#sverka-header .screen-tagline {
+  grid-column: 2; justify-self: center; min-width: 0; margin: 0;
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: center;
+  gap: 2px 6px; text-align: center;
+  color: var(--sverka-accent); font-size: 14px; font-weight: 750;
+}
+#sverka-header .screen-tagline blockquote { margin: 0; padding: 0; border: 0; font: inherit; color: inherit; }
+#sverka-header .screen-tagline figcaption { margin: 0; color: var(--sverka-muted); font-size: 11px; font-weight: 500; }
+#sverka-header .screen-counter {
+  grid-column: 3; justify-self: end; display: inline-flex; flex-wrap: wrap;
+  align-items: baseline; justify-content: flex-end; gap: 2px 8px;
+  padding: 5px 10px; border: 1px solid var(--sverka-line); border-radius: 8px;
+  background: light-dark(#f4efff, #382c4d); color: var(--sverka-muted); font-size: 12px;
+}
+#sverka-header .screen-counter strong {
+  color: var(--sverka-accent); font-size: 16px; font-variant-numeric: tabular-nums;
+}
+
+#sverka-banner {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.07fr);
+  align-items: center; gap: 24px; padding: clamp(18px, 3.2vw, 30px);
+  border: 1px solid var(--sverka-line); border-radius: 22px;
+  background: radial-gradient(ellipse at 95% 12%, light-dark(#e9dfff, #392854), transparent 65%),
+    light-dark(#faf8ff, #1e192b);
+}
+#sverka-banner h1 {
+  margin: 0 0 8px; padding: 0; font-size: clamp(26px, 4.5vw, 40px);
+  line-height: 1.1; letter-spacing: -.04em; color: var(--sverka-ink);
+}
+#sverka-banner p { margin: 0; font-size: 14px; line-height: 1.5; color: var(--sverka-muted); }
+#sverka-banner .illustration { display: grid; gap: 13px; min-width: 0; }
+#sverka-banner .acts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+#sverka-banner .act {
+  position: relative; overflow: hidden; padding: 11px 9px;
+  background: var(--sverka-panel); border: 1px solid var(--sverka-line);
+  border-radius: 12px; box-shadow: 0 7px 18px light-dark(#4e386a14, #0003);
+}
+#sverka-banner .act h3 { margin: 0 0 8px; padding: 0; font-size: 12px; color: var(--sverka-muted); }
+#sverka-banner .amount {
+  padding: 6px 2px; border-top: 1px solid var(--sverka-line); text-align: right;
+  font-size: clamp(11px, 1.9vw, 14px); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+#sverka-banner :is(.different, .difference) { background: var(--sverka-amber-bg); color: var(--sverka-amber); font-weight: 700; }
+#sverka-banner .different { border-top-color: transparent; border-radius: 4px; }
+#sverka-banner .difference { justify-self: center; border-radius: 999px; padding: 5px 10px; font-size: 12px; }
+#sverka-banner .scan {
+  position: absolute; inset: 0 6px auto; height: 2px; opacity: 0; pointer-events: none;
+  background: var(--sverka-accent); box-shadow: 0 0 9px var(--sverka-accent);
+}
+
+#sverka-screen .feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+#sverka-screen .feature {
+  display: flex; gap: 9px; align-items: flex-start; padding: 12px;
+  background: var(--sverka-panel); border: 1px solid var(--sverka-line); border-radius: 12px;
+}
+#sverka-screen .feature-icon { color: var(--sverka-accent); font-size: 18px; line-height: 1; }
+#sverka-screen .feature h3 { padding: 0; margin: 0; font-size: 13px; color: var(--sverka-ink); }
+#sverka-screen .feature p { margin: 3px 0 0; font-size: 12px; color: var(--sverka-muted); }
+#sverka-screen .upload-title { margin: 0; padding: 0; font-size: 17px; color: var(--sverka-ink); }
+
+.stApp :is([data-testid="stFileUploader"], [data-testid="stMetric"], [data-testid="stExpander"], [data-testid="stDataFrame"]) {
+  background: var(--sverka-panel); border-radius: 12px;
+}
+.stApp :is([data-testid="stFileUploader"], [data-testid="stMetric"]) {
+  border: 1px solid var(--sverka-line); padding: 12px 14px;
+}
+.stApp [data-testid="stFileUploaderDropzone"] { border: 1px dashed var(--sverka-line); border-radius: 8px; }
+.stApp [data-testid="stDataFrame"] { overflow: hidden; }
+.stApp .stButton button[kind="primary"] {
+  background: light-dark(#5946b7, #c3b4ff);
+  border-color: transparent;
+  color: light-dark(#fff, #24173c);
+}
+.stApp .site-footer {
+  padding: 26px 6px; border-top: 1px solid var(--sverka-line);
+  display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; color: var(--sverka-muted); font-size: .82rem;
+}
+
+@media (max-width: 780px) {
+  #sverka-header { grid-template-columns: minmax(0, 1fr) auto; }
+  #sverka-header .screen-tagline { grid-area: 2 / 1 / 3 / -1; }
+  #sverka-header .screen-counter { grid-area: 1 / 2; }
+}
+@media (max-width: 360px) {
+  #sverka-header .screen-counter { gap: 2px 4px; padding-inline: 6px; }
+}
+@media (max-width: 590px) {
+  #sverka-screen .feature-grid { grid-template-columns: 1fr; gap: 6px; }
+  #sverka-screen .feature { padding: 8px 10px; }
+  #sverka-banner { grid-template-columns: 1fr; gap: 15px; }
+}
+
+.stApp .paper-stage {
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+  }
+  .stApp .floating-paper {
+    position: absolute;
+    box-sizing: border-box;
+    width: calc(clamp(90px, 15vw, 145px) * var(--paper-size, 1));
+    height: calc(clamp(116px, 18vw, 178px) * var(--paper-size, 1));
+    padding: 11px 9px;
+    border: 1px solid light-dark(#8366b268, #c9adf66b);
+    border-radius: 10px;
+    color: light-dark(#695190, #d5bdf7);
+    background: light-dark(#fff7, #b28ce31b);
+    box-shadow: 0 10px 26px light-dark(#65568d24, #120a2570);
+    font-size: 10px;
+    font-weight: 720;
+    letter-spacing: .08em;
+    opacity: var(--paper-opacity, .95);
+    animation: sverka-paper-float var(--paper-duration) ease-in-out infinite alternate;
+  }
+  .stApp .floating-paper span {
+    display: block;
+    height: 1px;
+    margin-top: 12px;
+    background: currentColor;
+    opacity: .36;
+  }
+  .stApp .floating-paper span:last-child { width: 57%; }
+  .stApp .paper-act {
+    left: -10px; top: 20%;
+    --paper-duration: 12s; --tilt-start: -17deg; --tilt-end: -4deg; --rise: -64px; --bend: 15px; --drift: 34px;
+    animation-delay: -3s;
+  }
+  .stApp .paper-invoice {
+    right: 0; top: 13%;
+    --paper-duration: 14s; --tilt-start: 9deg; --tilt-end: 22deg; --rise: 63px; --bend: -13px; --drift: 24px;
+    animation-delay: -11s;
+  }
+  .stApp .paper-delivery {
+    right: -13px; bottom: -6%;
+    --paper-duration: 11s; --tilt-start: 15deg; --tilt-end: -6deg; --rise: -64px; --bend: -20px; --drift: 12px;
+    animation-delay: -4s;
+  }
+  .stApp .paper-payment {
+    left: -15px; top: 47%;
+    --paper-size: .8; --paper-opacity: .68;
+    --paper-duration: 15s; --tilt-start: 12deg; --tilt-end: -18deg; --rise: 58px; --bend: 27px; --drift: -12px;
+    animation-delay: -9s;
+  }
+  .stApp .paper-statement {
+    right: -10px; top: 46%;
+    --paper-size: .92; --paper-opacity: .78;
+    --paper-duration: 13s; --tilt-start: -15deg; --tilt-end: 5deg; --rise: -52px; --bend: 16px; --drift: -28px;
+    animation-delay: -8s;
+  }
+  .stApp .paper-register {
+    left: 2%; bottom: -12%;
+    --paper-size: .86; --paper-opacity: .88;
+    --paper-duration: 16s; --tilt-start: -20deg; --tilt-end: -3deg; --rise: -74px; --bend: -15px; --drift: 24px;
+    animation-delay: -13s;
+  }
+  .stApp .paper-invoice-copy {
+    left: 20%; top: -13%;
+    --paper-size: .75; --paper-opacity: .6;
+    --paper-duration: 13s; --tilt-start: 20deg; --tilt-end: 5deg; --rise: 39px; --bend: 25px; --drift: 68px;
+    animation-delay: -9s;
+  }
+  .stApp .paper-act-copy {
+    right: 25%; bottom: -15%;
+    --paper-size: .78; --paper-opacity: .68;
+    --paper-duration: 15s; --tilt-start: -10deg; --tilt-end: 13deg; --rise: -42px; --bend: -17px; --drift: -65px;
+    animation-delay: -7s;
+  }
+  @keyframes sverka-paper-float {
+    from { transform: translate(0, 0) rotate(var(--tilt-start)); }
+    48% { transform: translate(var(--bend), calc(var(--rise) * .52)) rotate(calc(var(--tilt-start) * .6)); }
+    to { transform: translate(var(--drift), var(--rise)) rotate(var(--tilt-end)); }
+  }
+
+#sverka-banner { --scan-cycle: 6s; }
+  #sverka-banner .scan { animation: sverka-periodic-scan var(--scan-cycle) ease-in-out infinite; }
+  #sverka-banner .different, #sverka-banner .difference {
+    animation: sverka-periodic-highlight var(--scan-cycle) ease-in-out infinite;
+  }
+  @keyframes sverka-periodic-scan {
+    0% { top: 91%; opacity: 0; }
+    3% { opacity: .95; }
+    23% { top: 18%; opacity: .95; }
+    46% { top: 91%; opacity: .95; }
+    49%, 100% { top: 91%; opacity: 0; }
+  }
+  @keyframes sverka-periodic-highlight {
+    0%, 49% { background: transparent; }
+    53%, 96% { background: var(--sverka-amber-bg); }
+    100% { background: transparent; }
+  }
+  #sverka-banner .difference { animation-name: sverka-periodic-result; }
+  @keyframes sverka-periodic-result {
+    0%, 49% { opacity: 0; }
+    53%, 96% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+</style>""")
+
+PAPER_BACKGROUND = """
+<div class="paper-stage" aria-hidden="true">
+  <div class="floating-paper paper-act">АКТ СВЕРКИ<span></span><span></span><span></span><span></span></div>
+  <div class="floating-paper paper-invoice">СЧЁТ<span></span><span></span><span></span><span></span></div>
+  <div class="floating-paper paper-delivery">НАКЛАДНАЯ<span></span><span></span><span></span><span></span></div>
+  <div class="floating-paper paper-payment">ПЛАТЁЖНОЕ<br>ПОРУЧЕНИЕ<span></span><span></span><span></span></div>
+  <div class="floating-paper paper-statement">ВЫПИСКА<span></span><span></span><span></span><span></span></div>
+  <div class="floating-paper paper-register">РЕЕСТР<span></span><span></span><span></span><span></span></div>
+  <div class="floating-paper paper-invoice-copy">СЧЁТ<span></span><span></span><span></span><span></span></div>
+  <div class="floating-paper paper-act-copy">АКТ СВЕРКИ<span></span><span></span><span></span><span></span></div>
+</div>
+"""
+
+START_SCREEN = """
+<div id="sverka-screen">
+<section id="sverka-banner" aria-label="Баннер ACT SVERKA">
+    <div>
+      <h1>Два акта.<br>Видно, где разница.</h1>
+      <p>Сверка операций в Excel и PDF</p>
+    </div>
+    <div class="illustration" role="img" aria-label="Пример сверки. Суммы 12 450 и 12 540 рублей отличаются на 90 рублей.">
+      <div class="acts">
+        <div class="act">
+          <h3>Акт № 1</h3>
+          <div class="amount">8 700,00 ₽</div>
+          <div class="amount">3 680,00 ₽</div>
+          <div class="amount different">12 450,00 ₽</div>
+          <div class="scan" aria-hidden="true"></div>
+        </div>
+        <div class="act">
+          <h3>Акт № 2</h3>
+          <div class="amount">8 700,00 ₽</div>
+          <div class="amount">3 680,00 ₽</div>
+          <div class="amount different">12 540,00 ₽</div>
+          <div class="scan" aria-hidden="true"></div>
+        </div>
+      </div>
+      <div class="difference">Разница 90,00 ₽</div>
+    </div>
+  </section>
+<section class="feature-grid" aria-label="Возможности сервиса">
+      <div class="feature"><span class="feature-icon" aria-hidden="true">⇄</span><div><h3>Сравнение актов</h3><p>Операции, которые остались без пары.</p></div></div>
+      <div class="feature"><span class="feature-icon" aria-hidden="true">✧</span><div><h3>Умный поиск</h3><p>Подсказки по расхождениям в суммах.</p></div></div>
+      <div class="feature"><span class="feature-icon" aria-hidden="true">▤</span><div><h3>Готовый результат</h3><p>Список расхождений с датами и суммами.</p></div></div>
+    </section>
+<h2 class="upload-title" id="sverka-upload-title">Загрузите два акта</h2>
+</div>
+"""
+
 
 # -------------------- Универсальное чтение файлов (Excel + PDF) --------------------
 def read_pdf_tables(file):
@@ -107,7 +338,7 @@ def read_pdf_tables(file):
     rows = []
     try:
         with pdfplumber.open(file) as pdf:
-            for page in pdf.pages:
+            for page_number, page in enumerate(pdf.pages, start=1):
                 text = page.extract_text()
                 if not text: continue
                 
@@ -115,9 +346,10 @@ def read_pdf_tables(file):
                 current_date = None
                 current_doc = []
                 current_amt = None
+                current_location = None
                 pre_buffer = [] # Буфер для текста, идущего до даты
 
-                for line in lines:
+                for line_number, line in enumerate(lines, start=1):
                     line = line.strip()
                     if not line: continue
                     
@@ -138,12 +370,13 @@ def read_pdf_tables(file):
                             # Сохраняем предыдущую операцию
                             if current_date:
                                 final_doc = " ".join(current_doc).strip()
-                                rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt if current_amt else ""])
+                                rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt if current_amt else "", current_location])
                                 current_date = None
                                 current_doc = []
                                 current_amt = None
                                 
                             current_date = dates[0].group(1)
+                            current_location = {"page": page_number, "line": line_number}
                             rest = line[dates[0].end():].strip()
                             
                             # Очистка от дат в скобках, слова "от" и самих скобок
@@ -164,7 +397,7 @@ def read_pdf_tables(file):
                                     pre_buffer = []
                                     
                                 final_doc = " ".join(current_doc).strip()
-                                rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt])
+                                rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt, current_location])
                                 current_date = None
                                 current_doc = []
                                 current_amt = None
@@ -189,7 +422,7 @@ def read_pdf_tables(file):
                                 if doc_part: current_doc.append(doc_part)
                                 
                                 final_doc = " ".join(current_doc).strip()
-                                rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt])
+                                rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt, current_location])
                                 current_date = None
                                 current_doc = []
                                 current_amt = None
@@ -205,7 +438,7 @@ def read_pdf_tables(file):
                                 
                 if current_date:
                     final_doc = " ".join(current_doc).strip()
-                    rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt if current_amt else ""])
+                    rows.append([current_date, final_doc if final_doc else "Документ (не распознан)", current_amt if current_amt else "", current_location])
                     
     except Exception as e:
         st.error(f"Не удалось прочитать PDF: {e}")
@@ -214,9 +447,11 @@ def read_pdf_tables(file):
     if not rows: return pd.DataFrame()
 
     final_rows = []
+    source_locations = []
     for r in rows:
-        d, doc, amt = r
+        d, doc, amt, source_location = r
         if not parse_date(d): continue
+        source_locations.append(source_location)
         
         # Финальная очистка названия
         doc = re.sub(r'\s+', ' ', doc).strip()
@@ -239,6 +474,7 @@ def read_pdf_tables(file):
     # Возвращаем с колонками 0, 1, 2, 3, чтобы избежать ошибки KeyError
     result_df = df[['date', 'doc', 'debit_str', 'credit_str']].copy()
     result_df.columns = [0, 1, 2, 3]
+    result_df.attrs["source_locations"] = source_locations
     return result_df
 
 def read_any_file(file):
@@ -361,7 +597,8 @@ def auto_detect_columns_letters(df):
 
 def extract_ops(df, date_col, doc_col, debit_col, credit_col):
     ops = []
-    for _, row in df.iterrows():
+    source_locations = df.attrs.get("source_locations")
+    for index, (_, row) in enumerate(df.iterrows()):
         if len(row) <= max(date_col, doc_col, debit_col, credit_col): continue
         dt = parse_date(row[date_col])
         if dt is None: continue
@@ -379,7 +616,11 @@ def extract_ops(df, date_col, doc_col, debit_col, credit_col):
             amount = debit; sign = -1
         else: continue
         
-        ops.append({'date': dt, 'doc': doc, 'amount': abs(amount), 'sign': sign, 'raw_doc': doc, 'change': amount})
+        source = source_locations[index] if source_locations is not None else {"row": index + 1}
+        ops.append({
+            "date": dt, "doc": doc, "amount": abs(amount), "sign": sign, "raw_doc": doc,
+            "change": amount, "source_index": index, **source,
+        })
     return ops
 
 def is_correction(doc_text):
@@ -602,278 +843,414 @@ def smart_summary(only1, only2, hints):
         lines.append(f'Возможных ошибок суммы для проверки: {len(hints)}.')
     return '\n'.join(lines)
 
-# -------------------- Основная часть --------------------
-if file1 and file2:
-    df1 = read_any_file(file1)
-    df2 = read_any_file(file2)
+def render_comparison_form():
+    generation = st.session_state.get("upload_generation", 0)
+    col1, col2 = st.columns(2)
+    with col1:
+        file1 = st.file_uploader("Первый акт", type=["xls", "xlsx", "pdf"], key=f"first-act-{generation}")
+    with col2:
+        file2 = st.file_uploader("Второй акт", type=["xls", "xlsx", "pdf"], key=f"second-act-{generation}")
 
-    if df1.empty or df2.empty:
-        st.error("Один или оба файла не удалось прочитать.")
-        st.stop()
+    if file1 and file2:
+        df1 = read_any_file(file1)
+        df2 = read_any_file(file2)
 
-    contractors1 = get_contractors(df1)
-    contractors2 = get_contractors(df2)
-    inns1 = get_inns(df1)
-    inns2 = get_inns(df2)
-    skip_check = st.checkbox("Пропустить проверку контрагентов", value=False)
-    contractor_status = 'uncertain'
-    allow_comparison = True
-    if skip_check:
-        st.info("Проверка контрагентов отключена по вашему выбору.")
-    else:
-        contractor_status, message = compare_contractors(contractors1, contractors2, inns1, inns2)
-        if contractor_status == 'match':
-            st.success(message)
-        elif contractor_status == 'different':
-            st.error("⚠️ " + message + " Сверка приостановлена до подтверждения.")
-            allow_comparison = st.checkbox(
-                "Я проверил контрагентов и всё равно хочу выполнить сверку",
-                value=False,
-                key="confirm_different_contractors",
-            )
+        if df1.empty or df2.empty:
+            st.error("Один или оба файла не удалось прочитать.")
+            st.stop()
+
+        contractors1 = get_contractors(df1)
+        contractors2 = get_contractors(df2)
+        inns1 = get_inns(df1)
+        inns2 = get_inns(df2)
+        skip_check = st.checkbox("Пропустить проверку контрагентов", value=False)
+        contractor_status = 'uncertain'
+        allow_comparison = True
+        if skip_check:
+            st.info("Проверка контрагентов отключена по вашему выбору.")
         else:
-            st.warning(message + " Сверка доступна.")
-        with st.expander("Какие реквизиты контрагентов обнаружены?"):
-            st.write("**Акт 1 — названия:**", ", ".join(sorted(contractors1)) or "не найдены")
-            st.write("**Акт 2 — названия:**", ", ".join(sorted(contractors2)) or "не найдены")
-            st.write("**Акт 1 — ИНН:**", ", ".join(sorted(inns1)) or "не найдены")
-            st.write("**Акт 2 — ИНН:**", ", ".join(sorted(inns2)) or "не найдены")
-            st.caption("Проверка предварительная: в файлах могут присутствовать ИНН обеих сторон. На алгоритм сопоставления операций она не влияет.")
+            contractor_status, message = compare_contractors(contractors1, contractors2, inns1, inns2)
+            if contractor_status == 'match':
+                st.success(message)
+            elif contractor_status == 'different':
+                st.error("⚠️ " + message + " Сверка приостановлена до подтверждения.")
+                allow_comparison = st.checkbox(
+                    "Я проверил контрагентов и всё равно хочу выполнить сверку",
+                    value=False,
+                    key="confirm_different_contractors",
+                )
+            else:
+                st.warning(message + " Сверка доступна.")
+            with st.expander("Какие реквизиты контрагентов обнаружены?"):
+                st.write("**Акт 1 — названия:**", ", ".join(sorted(contractors1)) or "не найдены")
+                st.write("**Акт 2 — названия:**", ", ".join(sorted(contractors2)) or "не найдены")
+                st.write("**Акт 1 — ИНН:**", ", ".join(sorted(inns1)) or "не найдены")
+                st.write("**Акт 2 — ИНН:**", ", ".join(sorted(inns2)) or "не найдены")
+                st.caption("Проверка предварительная: в файлах могут присутствовать ИНН обеих сторон. На алгоритм сопоставления операций она не влияет.")
 
-    st.markdown("### Настройка сравнения")
-    st.caption("Проверьте расположение колонок и параметры поиска совпадений.")
-    st.subheader("Просмотр структуры файлов (первые 10 строк)")
-    col_struct1, col_struct2 = st.columns(2)
-    with col_struct1:
-        st.write("Первый файл")
-        st.dataframe(df1.head(10))
-    with col_struct2:
-        st.write("Второй файл")
-        st.dataframe(df2.head(10))
+        st.markdown("### Настройка сравнения")
+        st.caption("Проверьте расположение колонок и параметры поиска совпадений.")
+        st.subheader("Просмотр структуры файлов (первые 10 строк)")
+        col_struct1, col_struct2 = st.columns(2)
+        with col_struct1:
+            st.write("Первый файл")
+            st.dataframe(df1.head(10))
+        with col_struct2:
+            st.write("Второй файл")
+            st.dataframe(df2.head(10))
 
-    if file1.name.lower().endswith('.pdf'):
-        date1_def, doc1_def, debit1_def, credit1_def = '0', '1', '2', '3'
-    else:
-        detected1 = auto_detect_columns_letters(df1)
-        date1_def, doc1_def, debit1_def, credit1_def = detected1 if detected1 else ('A', 'B', 'C', 'D')
-
-    if file2.name.lower().endswith('.pdf'):
-        date2_def, doc2_def, debit2_def, credit2_def = '0', '1', '2', '3'
-    else:
-        detected2 = auto_detect_columns_letters(df2)
-        date2_def, doc2_def, debit2_def, credit2_def = detected2 if detected2 else ('A', 'B', 'C', 'D')
-
-    col1_set, col2_set = st.columns(2)
-    with col1_set:
-        st.subheader("Настройка первого файла")
-        date1 = st.text_input("Дата", value=date1_def)
-        doc1 = st.text_input("Документ", value=doc1_def)
-        debit1 = st.text_input("Дебет", value=debit1_def)
-        credit1 = st.text_input("Кредит", value=credit1_def)
-    with col2_set:
-        st.subheader("Настройка второго файла")
-        date2 = st.text_input("Дата (второй)", value=date2_def)
-        doc2 = st.text_input("Документ (второй)", value=doc2_def)
-        debit2 = st.text_input("Дебет (второй)", value=debit2_def)
-        credit2 = st.text_input("Кредит (второй)", value=credit2_def)
-
-    ignore_sign = st.checkbox("Игнорировать знак (претензия = корректировка)", value=True)
-    ignore_dates = st.checkbox("Не учитывать даты при сравнении", value=True)
-    filter_initial = st.checkbox("Исключить операции до 01.07.2026", value=False)
-
-    if st.button("🔎 Найти, где не сходится", disabled=not allow_comparison):
-        with st.spinner("🔍 Ищем документы, которые решили пойти своим путём…"):
-            def get_col_idx(col_str, df_cols):
-                col_str = str(col_str).strip()
-                if col_str.isdigit():
-                    return int(col_str)
-                return ord(col_str.upper()) - 65
-
-            ops1 = extract_ops(df1, get_col_idx(date1, df1.columns), get_col_idx(doc1, df1.columns), get_col_idx(debit1, df1.columns), get_col_idx(credit1, df1.columns))
-            ops2 = extract_ops(df2, get_col_idx(date2, df2.columns), get_col_idx(doc2, df2.columns), get_col_idx(debit2, df2.columns), get_col_idx(credit2, df2.columns))
-
-            if filter_initial:
-                start = datetime(2026, 7, 1).date()
-                ops1 = [op for op in ops1 if op['date'] >= start]
-                ops2 = [op for op in ops2 if op['date'] >= start]
-
-            if not ops1 or not ops2:
-                st.error("В одном из файлов нет операций. Проверьте колонки.")
-                st.stop()
-
-            copy1, copy2 = ops1.copy(), ops2.copy()
-            matched, only1, only2 = [], [], []
-
-            for op1 in copy1:
-                found = None
-                for idx, op2 in enumerate(copy2):
-                    if not ignore_dates and abs((op1['date'] - op2['date']).days) > 1: continue
-                    if abs(op1['amount'] - op2['amount']) > 0.01: continue
-                    if not ignore_sign and op1['sign'] != op2['sign']: continue
-                    found = idx; break
-                if found is not None: matched.append((op1, copy2.pop(found)))
-                else: only1.append(op1)
-            only2 = copy2
-
-
-        st.write(f"Всего операций в первом акте: **{len(ops1)}**")
-        st.write(f"Всего операций во втором акте: **{len(ops2)}**")
-
-        with st.expander("Извлечённые операции (первый акт)"): st.dataframe(pd.DataFrame(ops1))
-        with st.expander("Извлечённые операции (второй акт)"): st.dataframe(pd.DataFrame(ops2))
-
-        total_unmatched = len(only1) + len(only2)
-        if total_unmatched:
-            st.warning(f"🧐 Кажется, кто-то не договорился! Найдено {total_unmatched} операций без пары. Сейчас покажем, где именно.")
+        if file1.name.lower().endswith('.pdf'):
+            date1_def, doc1_def, debit1_def, credit1_def = '0', '1', '2', '3'
         else:
-            st.success("🎉 Красота! Расхождений не обнаружено. Бухгалтер может выдохнуть.")
+            detected1 = auto_detect_columns_letters(df1)
+            date1_def, doc1_def, debit1_def, credit1_def = detected1 if detected1 else ('A', 'B', 'C', 'D')
 
-        st.subheader("Результаты сравнения")
-        result_col1, result_col2, result_col3 = st.columns(3)
-        with result_col1:
-            st.metric("✅ Совпало операций", len(matched))
-        with result_col2:
-            st.metric("📄 Только в акте №1", len(only1))
-        with result_col3:
-            st.metric("📄 Только в акте №2", len(only2))
-        if total_unmatched:
-            st.caption(f"{len(matched)} операций нашли свою пару. {total_unmatched} пока остались в одиночестве. 🙂")
+        if file2.name.lower().endswith('.pdf'):
+            date2_def, doc2_def, debit2_def, credit2_def = '0', '1', '2', '3'
         else:
-            st.caption(f"Все {len(matched)} операций нашли свою пару. Идеальная компания! ✨")
+            detected2 = auto_detect_columns_letters(df2)
+            date2_def, doc2_def, debit2_def, credit2_def = detected2 if detected2 else ('A', 'B', 'C', 'D')
 
-        # Каждая операция выводится только один раз, в своей категории.
-        st.subheader("Детальный разбор расхождений")
-        st.caption("Все документы без пары сгруппированы по типам. Повторного списка претензий нет.")
+        col1_set, col2_set = st.columns(2)
+        with col1_set:
+            st.subheader("Настройка первого файла")
+            date1 = st.text_input("Дата", value=date1_def)
+            doc1 = st.text_input("Документ", value=doc1_def)
+            debit1 = st.text_input("Дебет", value=debit1_def)
+            credit1 = st.text_input("Кредит", value=credit1_def)
+        with col2_set:
+            st.subheader("Настройка второго файла")
+            date2 = st.text_input("Дата (второй)", value=date2_def)
+            doc2 = st.text_input("Документ (второй)", value=doc2_def)
+            debit2 = st.text_input("Дебет (второй)", value=debit2_def)
+            credit2 = st.text_input("Кредит (второй)", value=credit2_def)
 
-        def readable_direction(op):
-            return "−" if op.get("sign", 1) == -1 else "+"
+        ignore_sign = st.checkbox("Игнорировать знак (претензия = корректировка)", value=True)
+        ignore_dates = st.checkbox("Не учитывать даты при сравнении", value=True)
+        filter_initial = st.checkbox("Исключить операции до 01.07.2026", value=False)
 
-        def show_grouped_differences(operations, act_label):
-            if not operations:
-                st.success(f"{act_label}: операций без пары нет.")
+        if st.button("🔎 Найти, где не сходится", type="primary", disabled=not allow_comparison):
+            with st.spinner("🔍 Ищем документы, которые решили пойти своим путём…"):
+                def get_col_idx(col_str, df_cols):
+                    col_str = str(col_str).strip()
+                    if col_str.isdigit():
+                        return int(col_str)
+                    return ord(col_str.upper()) - 65
+
+                ops1 = extract_ops(df1, get_col_idx(date1, df1.columns), get_col_idx(doc1, df1.columns), get_col_idx(debit1, df1.columns), get_col_idx(credit1, df1.columns))
+                ops2 = extract_ops(df2, get_col_idx(date2, df2.columns), get_col_idx(doc2, df2.columns), get_col_idx(debit2, df2.columns), get_col_idx(credit2, df2.columns))
+
+                if filter_initial:
+                    start = datetime(2026, 7, 1).date()
+                    ops1 = [op for op in ops1 if op['date'] >= start]
+                    ops2 = [op for op in ops2 if op['date'] >= start]
+
+                if not ops1 or not ops2:
+                    st.error("В одном из файлов нет операций. Проверьте колонки.")
+                    st.stop()
+
+                copy1, copy2 = ops1.copy(), ops2.copy()
+                matched, only1, only2 = [], [], []
+
+                for op1 in copy1:
+                    found = None
+                    for idx, op2 in enumerate(copy2):
+                        if not ignore_dates and abs((op1['date'] - op2['date']).days) > 1: continue
+                        if abs(op1['amount'] - op2['amount']) > 0.01: continue
+                        if not ignore_sign and op1['sign'] != op2['sign']: continue
+                        found = idx; break
+                    if found is not None: matched.append((op1, copy2.pop(found)))
+                    else: only1.append(op1)
+                only2 = copy2
+
+            first_day = min(operation["date"] for operation in ops1 + ops2)
+            last_day = max(operation["date"] for operation in ops1 + ops2)
+            period = (f"{first_day:%d.%m.%Y}" if first_day == last_day
+                      else f"{first_day:%d.%m.%Y} – {last_day:%d.%m.%Y}")
+            hints, warnings, different_types = smart_analyze(matched, only1, only2, ops1, ops2)
+            snapshot = {
+                "files": [file1.name, file2.name],
+                "period": period,
+                "ops": [ops1, ops2],
+                "only": [[op["source_index"] for op in group] for group in (only1, only2)],
+                "pairs": [(a["source_index"], b["source_index"]) for a, b in matched],
+                "analysis": [hints, warnings, different_types],
+            }
+            try:
+                record_id = HISTORY.save(snapshot)
+            except sqlite3.Error:
+                logger.exception("Не удалось сохранить результат сверки")
+                st.error("Не удалось сохранить сверку. Проверьте локальную базу и повторите сравнение.")
                 return
-            st.markdown(f"#### {act_label} · {len(operations)}")
-            groups = {}
-            for op in operations:
-                group = smart_category(op.get("doc", op.get("raw_doc", "")))
-                groups.setdefault(group, []).append(op)
-            for group, entries in groups.items():
-                st.markdown(f"**{group} — {len(entries)}**")
-                rows = [{
-                    "Дата": op["date"].strftime("%d.%m.%Y") if hasattr(op["date"], "strftime") else str(op["date"]),
-                    "Документ": op["raw_doc"],
-                    "Сумма, ₽": round(op["amount"], 2),
-                    "Направление": readable_direction(op),
-                } for op in entries]
-                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+            open_review(record_id)
+            st.rerun()
 
-        show_grouped_differences(only1, "Только в первом акте")
-        show_grouped_differences(only2, "Только во втором акте")
 
-        # -------------------- ДОПОЛНИТЕЛЬНЫЙ УМНЫЙ АНАЛИЗ --------------------
-        # Основной алгоритм выше НЕ ИЗМЕНЯЕТСЯ.
-        st.divider()
-        st.subheader("🧠 Умный анализ: ищем подозрительные суммы")
-        st.caption("Возможно, здесь закралась опечатка. Проверим подозрительные суммы. Это подсказки, а не подтверждённые ошибки.")
+def render_result(record):
+    result = record["result"]
+    ops1, ops2 = result["ops"]
+    first = {op["source_index"]: op for op in ops1}
+    second = {op["source_index"]: op for op in ops2}
+    only1 = [first[source] for source in result["only"][0]]
+    only2 = [second[source] for source in result["only"][1]]
+    matched = result["pairs"]
+    status = "Проверено" if record["closed_at"] else "В работе"
+    st.header(f"Сверка №{record['id']} · {status}")
+    st.text(f"{result['files'][0]} ↔ {result['files'][1]}")
+    st.caption(f"Период операций: {result['period']}")
 
-        hints, warnings, different_types = smart_analyze(
-            matched, only1, only2, ops1, ops2
+    st.write(f"Всего операций в первом акте: **{len(ops1)}**")
+    st.write(f"Всего операций во втором акте: **{len(ops2)}**")
+
+    with st.expander("Извлечённые операции (первый акт)"): st.dataframe(pd.DataFrame(ops1))
+    with st.expander("Извлечённые операции (второй акт)"): st.dataframe(pd.DataFrame(ops2))
+
+    total_unmatched = len(only1) + len(only2)
+    if total_unmatched:
+        st.warning(f"🧐 Кажется, кто-то не договорился! Найдено {total_unmatched} операций без пары. Сейчас покажем, где именно.")
+    else:
+        st.success("🎉 Красота! Расхождений не обнаружено. Бухгалтер может выдохнуть.")
+
+    st.subheader("Результаты сравнения")
+    result_col1, result_col2, result_col3 = st.columns(3)
+    with result_col1:
+        st.metric("✅ Совпало операций", len(matched))
+    with result_col2:
+        st.metric("📄 Только в акте №1", len(only1))
+    with result_col3:
+        st.metric("📄 Только в акте №2", len(only2))
+    if total_unmatched:
+        st.caption(f"{len(matched)} операций нашли свою пару. {total_unmatched} пока остались в одиночестве. 🙂")
+    else:
+        st.caption(f"Все {len(matched)} операций нашли свою пару. Идеальная компания! ✨")
+
+    # Каждая операция выводится только один раз, в своей категории.
+    st.subheader("Детальный разбор расхождений")
+    st.caption("Все документы без пары сгруппированы по типам. Повторного списка претензий нет.")
+
+    def readable_direction(op):
+        return "−" if op.get("sign", 1) == -1 else "+"
+
+    def show_grouped_differences(operations, act_label):
+        if not operations:
+            st.success(f"{act_label}: операций без пары нет.")
+            return
+        st.markdown(f"#### {act_label} · {len(operations)}")
+        groups = {}
+        for op in operations:
+            group = smart_category(op.get("doc", op.get("raw_doc", "")))
+            groups.setdefault(group, []).append(op)
+        for group, entries in groups.items():
+            st.markdown(f"**{group} — {len(entries)}**")
+            rows = [{
+                "Дата": op["date"].strftime("%d.%m.%Y") if hasattr(op["date"], "strftime") else str(op["date"]),
+                "Документ": op["raw_doc"],
+                "Сумма, ₽": round(op["amount"], 2),
+                "Направление": readable_direction(op),
+            } for op in entries]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+    show_grouped_differences(only1, "Только в первом акте")
+    show_grouped_differences(only2, "Только во втором акте")
+
+    # -------------------- ДОПОЛНИТЕЛЬНЫЙ УМНЫЙ АНАЛИЗ --------------------
+    # Основной алгоритм выше НЕ ИЗМЕНЯЕТСЯ.
+    st.divider()
+    st.subheader("🧠 Умный анализ: ищем подозрительные суммы")
+    st.caption("Возможно, здесь закралась опечатка. Проверим подозрительные суммы. Это подсказки, а не подтверждённые ошибки.")
+
+    hints, warnings, different_types = result["analysis"]
+    for warning in warnings:
+        st.warning(warning)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Без пары в акте 1", len(only1))
+    c2.metric("Без пары в акте 2", len(only2))
+    c3.metric("Возможные ошибки сумм", len(hints))
+
+    st.markdown("#### Заключение")
+    st.write(
+        f"Найдено **{len(only1) + len(only2)} несопоставленных записей**: "
+        f"{len(only1)} в первом акте и {len(only2)} во втором. "
+        "Одна хозяйственная операция может присутствовать в обоих списках "
+        "с разными суммами или обозначениями."
+    )
+    if hints:
+        st.warning(
+            f"Есть {len(hints)} возможных соответствий с расхождением суммы "
+            "не более 1 000 рублей. Они требуют проверки по первичным документам."
         )
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Без пары в акте 1", len(only1))
-        c2.metric("Без пары в акте 2", len(only2))
-        c3.metric("Возможные ошибки сумм", len(hints))
+        st.dataframe(pd.DataFrame(hints), hide_index=True, width="stretch")
+    elif not only1 or not only2:
+        st.info("Для поиска пар по сумме нужны несопоставленные строки в обоих актах.")
+    else:
+        st.info("Похожих сумм с разницей до 1 000 рублей среди несопоставленных операций не обнаружено.")
 
-        st.markdown("#### Заключение")
-        st.write(
-            f"Найдено **{len(only1) + len(only2)} несопоставленных записей**: "
-            f"{len(only1)} в первом акте и {len(only2)} во втором. "
-            "Одна хозяйственная операция может присутствовать в обоих списках "
-            "с разными суммами или обозначениями."
-        )
-        if hints:
-            st.warning(
-                f"Есть {len(hints)} возможных соответствий с расхождением суммы "
-                "не более 1 000 рублей. Они требуют проверки по первичным документам."
-            )
-            st.dataframe(pd.DataFrame(hints), hide_index=True, use_container_width=True)
+    # Повторения с равным количеством в обоих актах не объявляем ошибкой.
+    from collections import Counter
+    counts1 = Counter(round(x['amount'], 2) for x in ops1)
+    counts2 = Counter(round(x['amount'], 2) for x in ops2)
+    uneven = [
+        {"Сумма, ₽": amount, "Акт 1": counts1[amount], "Акт 2": counts2[amount]}
+        for amount in sorted(set(counts1) | set(counts2))
+        if (counts1[amount] > 1 or counts2[amount] > 1)
+        and counts1[amount] != counts2[amount]
+    ]
+    with st.expander("Дополнительные проверки неоднозначных операций"):
+        if uneven:
+            st.write("Повторяющиеся суммы с разным количеством записей в актах:")
+            st.dataframe(pd.DataFrame(uneven), hide_index=True, width="stretch")
         else:
-            st.info("Похожих сумм с разницей до 1 000 рублей среди несопоставленных операций не обнаружено.")
+            st.write("Не найдено повторяющихся сумм с разным количеством записей.")
+        if different_types:
+            st.write("Пары, сопоставленные по сумме, но с разными типами документов:")
+            st.dataframe(pd.DataFrame(different_types), hide_index=True, width="stretch")
+        else:
+            st.write("Явных различий типов в сопоставленных парах не выявлено.")
+        st.caption("Даже одинаковое количество повторений не гарантирует правильное соответствие номеров документов.")
 
-        # Повторения с равным количеством в обоих актах не объявляем ошибкой.
-        from collections import Counter
-        counts1 = Counter(round(x['amount'], 2) for x in ops1)
-        counts2 = Counter(round(x['amount'], 2) for x in ops2)
-        uneven = [
-            {"Сумма, ₽": amount, "Акт 1": counts1[amount], "Акт 2": counts2[amount]}
-            for amount in sorted(set(counts1) | set(counts2))
-            if (counts1[amount] > 1 or counts2[amount] > 1)
-            and counts1[amount] != counts2[amount]
-        ]
-        with st.expander("Дополнительные проверки неоднозначных операций"):
-            if uneven:
-                st.write("Повторяющиеся суммы с разным количеством записей в актах:")
-                st.dataframe(pd.DataFrame(uneven), hide_index=True, use_container_width=True)
-            else:
-                st.write("Не найдено повторяющихся сумм с разным количеством записей.")
-            if different_types:
-                st.write("Пары, сопоставленные по сумме, но с разными типами документов:")
-                st.dataframe(pd.DataFrame(different_types), hide_index=True, use_container_width=True)
-            else:
-                st.write("Явных различий типов в сопоставленных парах не выявлено.")
-            st.caption("Даже одинаковое количество повторений не гарантирует правильное соответствие номеров документов.")
+    render_assistant(record, HISTORY, smart_category)
+    if not record["closed_at"]:
+        ready = all(status == "checked" for status in record["marks"].values())
+        if not ready:
+            st.caption("Для завершения сверки отметьте все строки как «Проверено». Отметки сохраняются автоматически.")
+        with st.container(horizontal=True):
+            st.button("Сохранить и продолжить позже", on_click=open_history)
+            if st.button("Завершить сверку", type="primary", disabled=not ready):
+                finish_review(record["id"])
 
-        # Окно для копирования: только несопоставленные документы и суммы.
-        copy_lines = []
+    # Окно для копирования: только несопоставленные документы и суммы.
+    copy_lines = []
 
-        if only1:
-            copy_lines.append("ТОЛЬКО В ПЕРВОМ АКТЕ:")
-            for op in only1:
-                copy_lines.append(
-                    f"{op['date']:%d.%m.%Y} | {op['raw_doc']} | "
-                    f"{op['amount']:.2f} руб."
-                )
+    if only1:
+        copy_lines.append("ТОЛЬКО В ПЕРВОМ АКТЕ:")
+        for op in only1:
+            copy_lines.append(
+                f"{op['date']:%d.%m.%Y} | {op['raw_doc']} | "
+                f"{op['amount']:.2f} руб."
+            )
+        copy_lines.append("")
+
+    if only2:
+        copy_lines.append("ТОЛЬКО ВО ВТОРОМ АКТЕ:")
+        for op in only2:
+            copy_lines.append(
+                f"{op['date']:%d.%m.%Y} | {op['raw_doc']} | "
+                f"{op['amount']:.2f} руб."
+            )
+        copy_lines.append("")
+
+    if hints:
+        copy_lines.append("ВОЗМОЖНЫЕ РАСХОЖДЕНИЯ В СУММАХ (ТРЕБУЮТ ПРОВЕРКИ):")
+        for hint in hints:
+            copy_lines.append(
+                f"Акт 1: {hint['Документ в акте 1']} — "
+                f"{hint['Сумма акта 1']:.2f} руб."
+            )
+            copy_lines.append(
+                f"Акт 2: {hint['Документ в акте 2']} — "
+                f"{hint['Сумма акта 2']:.2f} руб."
+            )
+            copy_lines.append(f"Разница: {hint['Разница']:.2f} руб.")
             copy_lines.append("")
 
-        if only2:
-            copy_lines.append("ТОЛЬКО ВО ВТОРОМ АКТЕ:")
-            for op in only2:
-                copy_lines.append(
-                    f"{op['date']:%d.%m.%Y} | {op['raw_doc']} | "
-                    f"{op['amount']:.2f} руб."
-                )
-            copy_lines.append("")
+    copy_text = "\n".join(copy_lines).strip()
+    if not copy_text:
+        copy_text = "Расхождений не найдено."
 
-        if hints:
-            copy_lines.append("ВОЗМОЖНЫЕ РАСХОЖДЕНИЯ В СУММАХ (ТРЕБУЮТ ПРОВЕРКИ):")
-            for hint in hints:
-                copy_lines.append(
-                    f"Акт 1: {hint['Документ в акте 1']} — "
-                    f"{hint['Сумма акта 1']:.2f} руб."
-                )
-                copy_lines.append(
-                    f"Акт 2: {hint['Документ в акте 2']} — "
-                    f"{hint['Сумма акта 2']:.2f} руб."
-                )
-                copy_lines.append(f"Разница: {hint['Разница']:.2f} руб.")
-                copy_lines.append("")
+    st.divider()
+    st.subheader("📋 Забрать список расхождений")
+    st.caption(
+        "Заберите готовый список документов без пары, сумм и возможных ошибок. "
+        "Нажмите внутри поля, затем Ctrl+A и Ctrl+C."
+    )
+    st.text_area(
+        "Забрать список расхождений — выделите текст (Ctrl+A) и скопируйте (Ctrl+C)",
+        value=copy_text,
+        height=350,
+        key=f"copy_differences_{record['id']}"
+    )
 
-        copy_text = "\n".join(copy_lines).strip()
-        if not copy_text:
-            copy_text = "Расхождений не найдено."
 
-        st.divider()
-        st.subheader("📋 Забрать список расхождений")
-        st.caption(
-            "Заберите готовый список документов без пары, сумм и возможных ошибок. "
-            "Нажмите внутри поля, затем Ctrl+A и Ctrl+C."
-        )
-        st.text_area(
-            "Забрать список расхождений — выделите текст (Ctrl+A) и скопируйте (Ctrl+C)",
-            value=copy_text,
-            height=350,
-            key="copy_differences"
-        )
+def open_start():
+    st.session_state["review_view"] = "start"
+    st.session_state["upload_generation"] = st.session_state.get("upload_generation", 0) + 1
+
+
+def open_history():
+    st.session_state["review_view"] = "history"
+
+
+def open_review(record_id):
+    st.session_state["review_view"] = "review"
+    st.session_state["active_review"] = record_id
+
+
+def finish_review(record_id):
+    try:
+        finished = HISTORY.finish(record_id)
+    except sqlite3.Error:
+        logger.exception("Не удалось завершить сверку %s", record_id)
+        st.error("Не удалось завершить сверку. Попробуйте ещё раз.")
+        return
+    if not finished:
+        st.warning("Сверка уже завершена или в ней остались непроверенные строки. Обновите страницу.")
+        return
+    open_start()
+    st.session_state["home_notice"] = f"Сверка №{record_id} сохранена в «Мои сверки → Завершённые»."
+    st.rerun()
+
+
+def navigation(view):
+    with st.container(horizontal=True):
+        st.button("Новая сверка", key="nav-start",
+                  type="primary" if view == "start" else "secondary", on_click=open_start)
+        st.button("Мои сверки", key="nav-history",
+                  type="primary" if view == "history" else "secondary", on_click=open_history)
+
+
+def show_workspace():
+    view = st.session_state.get("review_view", "start")
+    try:
+        total = HISTORY.total()
+    except sqlite3.Error:
+        logger.exception("Не удалось открыть локальную базу")
+        show_header(st.empty(), None)
+        st.error("Не удалось открыть локальную базу. Проверьте, что приложение может писать в папку с базой.")
+        return
+
+    show_header(st.empty(), total)
+    st.html(PAPER_BACKGROUND)
+    navigation(view)
+    if view == "history":
+        try:
+            records = HISTORY.list()
+        except sqlite3.Error:
+            logger.exception("Не удалось загрузить историю")
+            st.error("Не удалось загрузить историю сверок. Попробуйте открыть раздел ещё раз.")
+            return
+        render_history(records, open_review)
+        return
+
+    if view == "review":
+        try:
+            record = HISTORY.load(st.session_state["active_review"])
+        except (sqlite3.Error, ValueError, KeyError):
+            logger.exception("Не удалось открыть сохранённую сверку")
+            st.error("Не удалось прочитать сохранённую сверку.")
+            return
+        if record is None:
+            st.error("Сохранённая сверка не найдена.")
+            return
+        render_result(record)
+        return
+
+    if notice := st.session_state.pop("home_notice", None):
+        st.success(notice)
+    st.html(START_SCREEN)
+    render_comparison_form()
+
+
+show_workspace()
 
 # Компактная информация в самом низу — без большой отвлекающей карточки.
 st.markdown("""
